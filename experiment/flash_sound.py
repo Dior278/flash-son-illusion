@@ -10,7 +10,7 @@ compilé en WebAssembly). Il pilote directement les API du navigateur :
   * localStorage / fetch               -> copie de secours + envoi automatique des données
                                          (Google Apps Script, voir docs/DEPLOIEMENT.md)
 
-Principe de synchronisation audio-visuelle (voir README, section « Timing ») :
+Principe de synchronisation audio-visuelle (voir docs/TECHNIQUE.md, section « Timing ») :
   1. on estime la période de rafraîchissement de l'écran (médiane de 120 images) ;
   2. ~250 ms avant le flash, dans un rappel requestAnimationFrame de timestamp t,
      on fixe l'image du flash sur la grille des rafraîchissements : T = t + k * période ;
