@@ -6,7 +6,7 @@ du dossier `scripts/` (création de la liste d'essais, simulation).
 """
 
 EXPERIMENT_NAME = "flash-son-illusion"
-EXPERIMENT_VERSION = "1.0.0"
+EXPERIMENT_VERSION = "2.0.0"
 
 # ---------------------------------------------------------------------------
 # Stimuli visuels (unités « hauteur d'écran », comme la version en ligne
@@ -32,37 +32,43 @@ BEEP_RAMP_MS = 1                 # rampes cosinus de 1 ms (évite les clics)
 BEEP_GAIN = 0.5                  # amplitude (0-1) ; le volume se règle sur l'ordinateur
 CORE_BEEP_SOA_MS = 57            # 57 ms entre deux bips (Shams et al., 2000)
 
-# Extension « moins basique » : écart entre les 2 bips dans la condition
-# 1 flash + 2 bips, pour estimer la fenêtre d'intégration temporelle.
-# (57 ms = condition principale, déjà incluse dans le cœur du plan.)
-EXTENSION_BEEP_SOAS_MS = [100, 150, 200, 300]
+# Variante « écart » : dans la condition 1 flash + 2 bips, on écarte aussi les
+# 2 bips de 200 ms (au lieu de 57 ms) pour montrer que l'illusion dépend du timing.
+GAP_BEEP_SOA_MS = 200
 
 # ---------------------------------------------------------------------------
-# Plan expérimental (nombre de répétitions par condition)
+# Plan expérimental (nombre de répétitions par condition) -- v2 : 58 essais
 # ---------------------------------------------------------------------------
 REPS_CORE = {          # (n_flashes, n_beeps) : répétitions (SOA bips = 57 ms)
-    (1, 0): 10,
-    (1, 1): 10,
-    (1, 2): 12,        # condition critique (illusion de fission)
-    (2, 0): 10,
-    (2, 1): 10,        # illusion de fusion
-    (2, 2): 10,
+    (1, 0): 8,
+    (1, 1): 8,
+    (1, 2): 8,         # illusion de FISSION (Shams et al., 2000)
+    (2, 0): 8,
+    (2, 1): 8,         # illusion de FUSION (Andersen, Tiippana & Sams, 2004)
+    (2, 2): 8,
 }
-REPS_EXTENSION = 8     # répétitions par SOA de l'extension (1 flash + 2 bips)
+REPS_GAP = 6           # 1 flash + 2 bips séparés de 200 ms
 REPS_CATCH = 4         # 2 flashs séparés de 150 ms, sans son (contrôle d'attention)
 
-PRACTICE_TRIALS = [    # (n_flashes, n_beeps, beep_soa_ms, flash_soa_ms) avec feedback
+PRACTICE_TRIALS = [    # (n_flashes, n_beeps, beep_soa_ms, flash_soa_ms) avec correction
     (1, 0, 0, 0),
-    (2, 0, 0, CATCH_FLASH_SOA_MS),
     (2, 0, 0, FLASH_SOA_MS),
-    (1, 1, 0, 0),
     (2, 2, CORE_BEEP_SOA_MS, FLASH_SOA_MS),
-    (1, 0, 0, 0),
 ]
 AUDIO_CHECK_TRIALS = [  # (n_beeps, beep_soa_ms) : « combien de bips ? » (pas de flash)
-    (1, 0), (2, CORE_BEEP_SOA_MS), (2, CORE_BEEP_SOA_MS), (1, 0), (2, CORE_BEEP_SOA_MS), (1, 0),
+    (2, CORE_BEEP_SOA_MS), (1, 0), (2, CORE_BEEP_SOA_MS),
 ]
 MAX_SAME_CONDITION_IN_A_ROW = 3
+
+# ---------------------------------------------------------------------------
+# Questions posées (réduites au strict nécessaire pour l'analyse)
+# ---------------------------------------------------------------------------
+# Tranche d'âge : la fenêtre temporelle d'intégration audio-visuelle s'élargit avec
+# l'âge (Setti et al., 2011 ; McGovern et al., 2014) -> covariable utile, sans être identifiante.
+AGE_BRACKETS = [("18-21", "18–21 ans"), ("22-25", "22–25 ans"), ("26-35", "26–35 ans"), ("36+", "36 ans et +")]
+# Matériel audio : le Bluetooth retarde le son de 100–300 ms -> critère d'exclusion.
+AUDIO_DEVICES = [("wired", "Casque ou écouteurs filaires"), ("speakers", "Haut-parleurs"),
+                 ("bluetooth", "Bluetooth (AirPods…)")]
 
 # ---------------------------------------------------------------------------
 # Déroulement temporel d'un essai
@@ -85,13 +91,27 @@ DROPPED_FRAME_FACTOR = 1.5   # une image est « perdue » si l'écart entre 2 ra
 REFRESH_ESTIMATE_FRAMES = 120
 
 # ---------------------------------------------------------------------------
-# Sauvegarde des données
+# Envoi des données
 # ---------------------------------------------------------------------------
-# 1) Toujours : copie de secours dans le navigateur (localStorage) après chaque essai
-# 2) Toujours : téléchargement automatique du CSV à la fin (+ bouton)
-# 3) Optionnel : envoi automatique vers un service gratuit (laisser "" pour désactiver)
-DATAPIPE_EXPERIMENT_ID = ""      # ex. "a1B2c3D4e5F6" (https://pipe.jspsych.org -> Google Drive / Zenodo / Dataverse)
-APPS_SCRIPT_URL = ""             # ex. "https://script.google.com/macros/s/XXXX/exec" (voir tools/google_apps_script.gs)
+# Les réponses sont envoyées AUTOMATIQUEMENT à la fin, vers une petite application
+# Google Apps Script déployée par l'expérimentateur (tools/google_apps_script.gs,
+# guide : docs/DEPLOIEMENT.md). Elle ne fait qu'AJOUTER un fichier CSV dans un dossier
+# Google Drive dédié ; elle ne permet pas de lire ou lister les données.
+# Tant que l'URL n'est pas renseignée, rien n'est envoyé et un petit bouton
+# de téléchargement apparaît à la fin (pratique pour tester en local).
+APPS_SCRIPT_URL = ""   # ex. "https://script.google.com/macros/s/XXXXXXXX/exec"
+
+# Jeton partagé optionnel (doit être identique dans le script Apps Script).
+# ATTENTION : le dépôt est public, donc ce jeton est lisible par tous. Ce n'est
+# qu'un filtre contre les envois automatiques « au hasard », PAS une sécurité.
+SHARED_TOKEN = ""
+
+UPLOAD_RETRY_DELAYS_S = [0, 1, 2, 4]   # tentatives et attentes entre elles (s)
+UPLOAD_TIMEOUT_S = 15
+UPLOAD_MAX_BYTES = 200_000            # même limite côté serveur
+
+# Copie de secours dans le navigateur (localStorage) après chaque essai ; les
+# sessions non envoyées sont renvoyées discrètement à la visite suivante.
 
 # Colonnes du fichier CSV (une ligne par essai), dans l'ordre.
 CSV_COLUMNS = [
@@ -109,7 +129,7 @@ CSV_COLUMNS = [
     "output_latency_ms", "base_latency_ms", "audio_sample_rate", "audio_mapping",
     "tab_hidden", "fullscreen",
     # informations participant / matériel (répétées sur chaque ligne)
-    "age", "gender", "handedness", "audio_device", "vision", "hearing",
+    "age_bracket", "audio_device",
     "audio_check_score", "user_agent", "screen_w", "screen_h", "device_pixel_ratio",
     "random_seed", "aborted",
 ]

@@ -7,7 +7,8 @@ Ce script tourne DANS LE NAVIGATEUR du participant grâce à Pyodide (CPython
 compilé en WebAssembly). Il pilote directement les API du navigateur :
   * <canvas> + requestAnimationFrame  -> flashs synchronisés au rafraîchissement de l'écran
   * Web Audio API (AudioContext)       -> bips programmés à l'échantillon près
-  * Blob / localStorage / fetch        -> sauvegarde des données
+  * localStorage / fetch               -> copie de secours + envoi automatique des données
+                                         (Google Apps Script, voir docs/DEPLOIEMENT.md)
 
 Principe de synchronisation audio-visuelle (voir README, section « Timing ») :
   1. on estime la période de rafraîchissement de l'écran (médiane de 120 images) ;
@@ -46,6 +47,11 @@ import config as C
 # Utilitaires
 # ---------------------------------------------------------------------------
 
+def is_null(x):
+    """Vrai pour None, JavaScript null (pyodide.ffi.jsnull, Pyodide >= 0.27) ou undefined."""
+    return x is None or type(x).__name__ == "JsNull"
+
+
 def js_obj(d):
     """Convertit un dict Python en objet JavaScript."""
     return to_js(d, dict_converter=js.Object.fromEntries)
@@ -53,7 +59,7 @@ def js_obj(d):
 
 def url_params():
     p = js.URLSearchParams.new(window.location.search)
-    return {k: p.get(k) for k in ("short", "debug", "pid", "mode") if p.has(k)}
+    return {k: p.get(k) for k in ("short", "debug", "mode") if p.has(k)}
 
 
 PARAMS = url_params()
@@ -451,7 +457,7 @@ class StimTrial:
         d["output_latency_ms"], d["base_latency_ms"] = out_lat, base_lat
         d["audio_sample_rate"] = self.audio.sample_rate
         d["tab_hidden"] = int(self.exp.hidden_count > self.hidden_at_start or document.visibilityState != "visible")
-        d["fullscreen"] = int(document.fullscreenElement is not None)
+        d["fullscreen"] = int(not is_null(document.fullscreenElement))
         d["prompt_visible_ts"] = self.prompt_ts + C.DISPLAY_LATENCY_FRAMES * P
         if not self.fut.done():
             self.fut.set_result(d)
@@ -462,23 +468,22 @@ class StimTrial:
 
 
 # ---------------------------------------------------------------------------
-# Écrans HTML
+# Écrans HTML (textes courts : une idée par écran)
 # ---------------------------------------------------------------------------
 
-AUDIO_DEVICES = [
-    ("wired_headphones", "Casque / écouteurs filaires (prise jack ou USB)"),
-    ("laptop_speakers", "Haut-parleurs intégrés de l'ordinateur"),
-    ("external_speakers", "Enceintes externes filaires"),
-    ("bluetooth", "Casque / écouteurs / enceinte Bluetooth (AirPods, etc.)"),
-    ("other", "Autre / je ne sais pas"),
-]
+SAFE_ALPHABET = "abcdefghjkmnpqrstuvwxyz23456789"
 
 
-def opts(pairs, placeholder="— choisir —"):
-    html = f'<option value="">{placeholder}</option>'
-    for v, lab in pairs:
-        html += f'<option value="{v}">{esc(lab)}</option>'
-    return html
+def clean_cell(v):
+    """Valeur CSV « sûre » : uniquement lettres, chiffres et . _ : ; / ( ) + - espace.
+    Donc jamais de virgule, guillemet ni retour à la ligne (même règle que le serveur)."""
+    if isinstance(v, float):
+        v = fmt(v)
+    return re.sub(r"[^A-Za-z0-9 ._:;/()+\-]", " ", str(v))
+
+
+def choice_buttons(prefix, pairs):
+    return "".join(f'<button class="choice" id="{prefix}-{i}">{esc(lab)}</button>' for i, (_, lab) in enumerate(pairs))
 
 
 class Experiment:
@@ -494,6 +499,8 @@ class Experiment:
         self.trial_global = 0
         self.aborted = 0
         self.session_id = self._make_session_id()
+        # code participant aléatoire : aucune donnée nominative n'est demandée
+        self.participant_id = "P" + "".join(random.choice(SAFE_ALPHABET.upper()) for _ in range(6))
         self.seed = int(js.Math.floor(js.Math.random() * 2 ** 31))
         self.rng = random.Random(self.seed)
         self.trials = list(csv.DictReader(io.StringIO(trials_csv_text)))
@@ -508,8 +515,7 @@ class Experiment:
     def _make_session_id():
         d = js.Date.new()
         stamp = f"{d.getFullYear():04d}{d.getMonth() + 1:02d}{d.getDate():02d}-{d.getHours():02d}{d.getMinutes():02d}{d.getSeconds():02d}"
-        rnd = "".join(random.choice("abcdefghjkmnpqrstuvwxyz23456789") for _ in range(4))
-        return f"{stamp}-{rnd}"
+        return stamp + "-" + "".join(random.choice(SAFE_ALPHABET) for _ in range(4))
 
     def _on_visibility(self, *args):
         if document.visibilityState != "visible":
@@ -523,10 +529,8 @@ class Experiment:
             node = document.getElementById(bid)
 
             def handler(ev, bid=bid):
-                if before is not None:
-                    ok = before(bid)
-                    if ok is False:
-                        return
+                if before is not None and before(bid) is False:
+                    return
                 if not fut.done():
                     fut.set_result(bid)
             p = create_proxy(handler)
@@ -541,41 +545,27 @@ class Experiment:
             p.destroy()
         return res
 
+    async def choose(self, title, pairs, prefix, extra=""):
+        self.stage.show_html(f'<div class="card"><h2>{title}</h2>{extra}<div class="choices">{choice_buttons(prefix, pairs)}</div></div>')
+        bid = await self.click([f"{prefix}-{i}" for i in range(len(pairs))])
+        return pairs[int(bid.rsplit("-", 1)[1])][0]
+
     # -- écrans -----------------------------------------------------------------
     async def screen_welcome(self):
         set_phase("welcome")
-        leftovers = self.find_leftover_sessions()
-        left_html = ""
-        if leftovers:
-            items = "".join(f'<li><button class="link" id="dl-{i}">Télécharger la session {esc(k.split(":", 1)[1])}</button></li>'
-                            for i, k in enumerate(leftovers))
-            left_html = f'<div class="note">Des données d\'une session précédente sont restées dans ce navigateur :<ul>{items}</ul></div>'
-        self.stage.show_html(f"""
+        self.stage.show_html("""
         <div class="card">
           <h1>Le flash et le son</h1>
-          <p class="lead">Une courte expérience de sciences cognitives sur la perception (≈ 5 minutes).</p>
-          <p>Un petit disque blanc va clignoter très brièvement à l'écran, parfois accompagné de bips.
-             Ta tâche est simple : <b>compter les flashs</b>. À la fin, tu découvriras à quel point ton cerveau
-             mélange la vue et l'ouïe.</p>
-          <ul>
-            <li>Il te faut un <b>ordinateur</b> (pas de téléphone), un <b>clavier</b> et du <b>son</b>.</li>
-            <li>Utilise de préférence un <b>casque filaire</b> ou les <b>haut-parleurs de l'ordinateur</b>
-                (le Bluetooth retarde le son et fausse la mesure).</li>
-            <li>Les données sont <b>anonymes</b> (un code au choix, aucune donnée nominative) et servent uniquement
-                à un projet de cours (École polytechnique, cours de sciences cognitives).</li>
-            <li>Tu peux arrêter à tout moment avec la touche <span class="kbd">Échap</span>.</li>
-          </ul>
-          <label class="check"><input type="checkbox" id="consent"> J'ai lu ces informations et j'accepte de participer.</label>
-          <label class="check"><input type="checkbox" id="epilepsy"> Je confirme ne pas souffrir d'épilepsie photosensible
-             (l'expérience contient de brefs flashs lumineux).</label>
+          <p class="lead">Un petit jeu de perception : compte des flashs.<br>
+             ≈ 4 minutes, sur ordinateur, avec du son.</p>
+          <label class="check"><input type="checkbox" id="consent"> J'ai 18 ans ou plus et j'accepte de participer.
+             Mes réponses sont <b>anonymes</b> (ni nom, ni e-mail).</label>
+          <label class="check"><input type="checkbox" id="epilepsy"> Je ne suis pas sujet·te à l'épilepsie photosensible
+             (il y a de brefs flashs).</label>
           <p class="error" id="err"></p>
-          <button id="go" class="primary">Continuer</button>
-          {left_html}
-          <p class="small">Référence : Shams, Kamitani &amp; Shimojo (2000), <i>What you see is what you hear</i>, Nature 408:788.</p>
+          <button id="go" class="primary">Commencer</button>
+          <p class="small">Projet de cours de sciences cognitives (École polytechnique). Tu peux arrêter à tout moment avec Échap.</p>
         </div>""")
-        for i, k in enumerate(leftovers):
-            node = document.getElementById(f"dl-{i}")
-            node.addEventListener("click", create_proxy(lambda ev, k=k: self.download_leftover(k)))
 
         def check(_):
             if not document.getElementById("consent").checked or not document.getElementById("epilepsy").checked:
@@ -585,99 +575,35 @@ class Experiment:
         await self.click(["go"], before=check)
 
     async def screen_info(self):
-        set_phase("info")
-        default_pid = PARAMS.get("pid") or ("P" + "".join(random.choice("ABCDEFGHJKMNPQRSTUVWXYZ23456789") for _ in range(5)))
-        self.stage.show_html(f"""
-        <div class="card">
-          <h2>Quelques informations</h2>
-          <div class="form">
-            <label>Code participant (pseudonyme, sans nom ni prénom)
-              <input id="pid" value="{esc(default_pid)}" maxlength="24"></label>
-            <label>Âge <input id="age" type="number" min="16" max="99" placeholder="ex. 21"></label>
-            <label>Genre <select id="gender">{opts([("F", "Femme"), ("M", "Homme"), ("O", "Autre"), ("undisclosed", "Je préfère ne pas répondre")])}</select></label>
-            <label>Main dominante <select id="handedness">{opts([("right", "Droitier·ère"), ("left", "Gaucher·ère"), ("ambi", "Ambidextre")])}</select></label>
-            <label>Avec quoi vas-tu écouter le son ? <select id="audio_device">{opts(AUDIO_DEVICES)}</select></label>
-            <label>Vision <select id="vision">{opts([("normal", "Normale"), ("corrected", "Corrigée (lunettes / lentilles portées)"), ("impaired", "Trouble non corrigé")])}</select></label>
-            <label>Audition <select id="hearing">{opts([("normal", "Normale"), ("impaired", "Trouble connu de l'audition")])}</select></label>
-          </div>
-          <p class="error" id="err"></p>
-          <button id="go" class="primary">Continuer</button>
-        </div>""")
-
-        def check(_):
-            g = lambda i: str(document.getElementById(i).value).strip()
-            pid = re.sub(r"[^A-Za-z0-9_-]", "", g("pid"))
-            missing = [lab for i, lab in (("age", "âge"), ("gender", "genre"), ("handedness", "main dominante"),
-                                          ("audio_device", "matériel audio"), ("vision", "vision"), ("hearing", "audition"))
-                       if not g(i)]
-            if not pid:
-                missing.insert(0, "code participant (lettres/chiffres)")
-            if missing:
-                document.getElementById("err").textContent = "Merci de compléter : " + ", ".join(missing) + "."
-                return False
-            try:
-                age = int(g("age"))
-                assert 16 <= age <= 99
-            except Exception:
-                document.getElementById("err").textContent = "Âge invalide."
-                return False
-            self.info = dict(participant_id=pid, age=age, gender=g("gender"), handedness=g("handedness"),
-                             audio_device=g("audio_device"), vision=g("vision"), hearing=g("hearing"))
-            return True
-        await self.click(["go"], before=check)
-
-        if self.info["audio_device"] == "bluetooth":
+        set_phase("age")
+        self.info["age_bracket"] = await self.choose("Ton âge ?", C.AGE_BRACKETS, "age")
+        set_phase("audio_device")
+        dev = await self.choose("Tu écoutes le son avec…", C.AUDIO_DEVICES, "dev")
+        if dev == "bluetooth":
             set_phase("bluetooth")
-            self.stage.show_html("""
-            <div class="card warn">
-              <h2>⚠️ Attention au Bluetooth</h2>
-              <p>Les écouteurs Bluetooth retardent le son de 100 à 300 ms. Or l'illusion étudiée ici n'apparaît que si
-                 le son et l'image arrivent à quelques dizaines de millisecondes d'écart : <b>avec du Bluetooth,
-                 tes données risquent d'être inutilisables</b>.</p>
-              <p>Si possible, débranche/désactive le Bluetooth et utilise un casque filaire ou les haut-parleurs de l'ordinateur.</p>
-              <button id="changed" class="primary">J'ai changé de matériel</button>
-              <button id="keep">Continuer quand même avec le Bluetooth</button>
-            </div>""")
-            choice = await self.click(["changed", "keep"])
-            if choice == "changed":
-                self.stage.show_html(f"""
-                <div class="card"><h2>Matériel audio utilisé maintenant</h2>
-                  <label>Avec quoi vas-tu écouter le son ? <select id="audio_device">{opts([p for p in AUDIO_DEVICES if p[0] != "bluetooth"])}</select></label>
-                  <p class="error" id="err"></p><button id="go" class="primary">Continuer</button></div>""")
-
-                def check2(_):
-                    v = str(document.getElementById("audio_device").value)
-                    if not v:
-                        document.getElementById("err").textContent = "Choisis une option."
-                        return False
-                    self.info["audio_device"] = v
-                    return True
-                await self.click(["go"], before=check2)
+            dev = await self.choose(
+                "Le Bluetooth retarde le son",
+                [("wired", "Je passe en filaire"), ("speakers", "Je passe aux haut-parleurs"), ("bluetooth", "Je reste en Bluetooth")],
+                "bt", extra="<p class='lead'>L'illusion risque de disparaître. Si tu peux, change.</p>")
+        self.info["audio_device"] = dev
 
     async def screen_setup(self):
         set_phase("setup")
         self.stage.show_html("""
         <div class="card">
           <h2>Installe-toi</h2>
-          <ul>
-            <li>Mets-toi dans un endroit <b>calme</b>, si possible avec une lumière tamisée.</li>
-            <li>Assieds-toi à environ <b>50–60 cm</b> de l'écran (une longueur de bras), bien en face.</li>
-            <li>Ferme les autres onglets et applications, coupe les notifications.</li>
-            <li>Mets le volume de l'ordinateur vers <b>70–80 %</b> (tu l'ajusteras juste après).</li>
-            <li>Si tu es sur un portable, <b>branche-le sur secteur</b> (l'économie d'énergie peut dégrader l'affichage).</li>
+          <ul class="big">
+            <li>Endroit calme</li>
+            <li>À une longueur de bras de l'écran</li>
+            <li>Volume vers 70–80 %</li>
           </ul>
-          <p>L'expérience passe en <b>plein écran</b>. Ne change pas d'onglet pendant l'expérience.</p>
-          <button id="go" class="primary">Passer en plein écran et activer le son</button>
+          <button id="go" class="primary">Plein écran et son</button>
         </div>""")
 
         def unlock(_):
             # Ces deux appels DOIVENT être faits pendant le clic (règle des navigateurs).
-            try:
-                self.audio = Audio()
-                self.audio.resume()
-            except Exception as e:
-                document.getElementById("ui").innerHTML = f"<div class='card warn'><h2>Son indisponible</h2><p>{esc(e)}</p></div>"
-                raise
+            self.audio = Audio()
+            self.audio.resume()
             try:
                 el = document.documentElement
                 if hasattr(el, "requestFullscreen"):
@@ -695,32 +621,26 @@ class Experiment:
         set_phase("soundcheck")
         self.stage.show_html("""
         <div class="card">
-          <h2>Réglage du son</h2>
-          <p>Clique sur « Jouer le son test » : tu vas entendre une série de petits bips aigus.
-             Règle le volume de ton ordinateur pour qu'ils soient <b>bien audibles mais pas désagréables</b>.</p>
-          <button id="play">🔊 Jouer le son test</button>
-          <p class="small" id="lat"></p>
-          <button id="ok" class="primary">J'entends bien les bips</button>
-          <button id="none">Je n'entends rien</button>
+          <h2>Règle le volume</h2>
+          <p class="lead">Les bips doivent être nets, pas désagréables.</p>
+          <button id="play">▶ Écouter</button>
+          <p class="small" id="hint"></p>
+          <button id="ok" class="primary">C'est bon</button>
+          <button id="none" class="link">Je n'entends rien</button>
         </div>""")
-        ol, bl = self.audio.latencies()
-        document.getElementById("lat").textContent = f"Latence audio annoncée par le navigateur : sortie {fmt(ol, 0)} ms, base {fmt(bl, 0)} ms."
 
         def play(_):
             self.audio.resume()
             t0 = float(self.audio.ctx.currentTime) + 0.1
-            for i in range(8):
+            for i in range(6):
                 self.audio.schedule(self.audio.beep, t0 + i * 0.35)
-            return False  # ne termine pas l'écran
+            return False
         play_node = document.getElementById("play")
         play_proxy = create_proxy(play)
         play_node.addEventListener("click", play_proxy)
-        while True:
-            choice = await self.click(["ok", "none"])
-            if choice == "ok":
-                break
-            document.getElementById("lat").innerHTML = ("<b>Vérifie</b> : volume de l'ordinateur, sortie audio sélectionnée, "
-                                                        "onglet non mis en sourdine, casque bien branché. Puis rejoue le son.")
+        while (await self.click(["ok", "none"])) != "ok":
+            document.getElementById("hint").textContent = ("Vérifie le volume, la sortie audio et que l'onglet n'est pas en sourdine, "
+                                                           "puis réécoute.")
         play_node.removeEventListener("click", play_proxy)
         play_proxy.destroy()
 
@@ -748,13 +668,18 @@ class Experiment:
                                  frac_irregular=sum(abs(i - med) > 0.25 * med for i in ints) / len(ints))
         log("refresh", self.refresh_info)
 
+    async def message(self, phase, html, after="pour continuer"):
+        set_phase(phase)
+        self.stage.show_html(f'<div class="card">{html}<p class="key"><span class="kbd">Espace</span> {after}</p></div>')
+        await self.keys.wait(["Space"])
+
     # -- enregistrement d'un essai -----------------------------------------------
     def add_row(self, block, idx, t, response, rt, diag):
         self.trial_global += 1
         nf, nb = t["n_flashes"], t["n_beeps"]
-        expected = nf if block != "audiocheck" else nb
+        expected = nf if not block.startswith("audiocheck") else nb
         row = dict(
-            participant_id=self.info.get("participant_id", ""), session_id=self.session_id,
+            participant_id=self.participant_id, session_id=self.session_id,
             experiment_version=C.EXPERIMENT_VERSION, timestamp_iso=now_iso(),
             block=block, trial_in_block=idx, trial_global=self.trial_global,
             condition=t["condition"], n_flashes=nf, n_beeps=nb,
@@ -762,9 +687,8 @@ class Experiment:
             response=response if response is not None else "",
             correct=int(response == expected) if response is not None else "",
             rt_ms=rt,
-            age=self.info.get("age", ""), gender=self.info.get("gender", ""), handedness=self.info.get("handedness", ""),
-            audio_device=self.info.get("audio_device", ""), vision=self.info.get("vision", ""),
-            hearing=self.info.get("hearing", ""), audio_check_score=self.info.get("audio_check_score", ""),
+            age_bracket=self.info.get("age_bracket", ""), audio_device=self.info.get("audio_device", ""),
+            audio_check_score=self.info.get("audio_check_score", ""),
             user_agent=str(window.navigator.userAgent), screen_w=int(window.screen.width), screen_h=int(window.screen.height),
             device_pixel_ratio=float(window.devicePixelRatio or 1), random_seed=self.seed, aborted=0,
         )
@@ -776,11 +700,8 @@ class Experiment:
         self.rows.append(row)
         self.backup()
         if DEBUG:
-            log(json.dumps({k: row[k] for k in ("block", "condition", "response", "rt_ms", "flash_late_ms",
-                                                 "n_dropped_frames", "audio_lead_ms", "av_offset_est_ms", "audio_mapping")},
-                           default=str))
             dbg = document.getElementById("debug")
-            if dbg is not None:
+            if not is_null(dbg):
                 dbg.textContent = (f"{block} #{idx} {t['condition']} resp={response} rt={fmt(rt, 0)} | "
                                    f"{fmt(diag.get('refresh_hz'), 1)} Hz, retard flash {fmt(diag.get('flash_late_ms'), 1)} ms, "
                                    f"images perdues {diag.get('n_dropped_frames')}, avance son {fmt(diag.get('audio_lead_ms'), 0)} ms, "
@@ -791,124 +712,66 @@ class Experiment:
         set_phase(block)
         self.stage.hide_html()
         n = len(trials)
+        prompt = ["Combien de " + ("BIPS ?" if question == "bips" else "FLASHS ?"), "1   ou   2"]
         for i, t in enumerate(trials, start=1):
             if progress:
                 self.stage.progress = (i - 1) / n
-            gc.disable()  # évite une pause du ramasse-miettes pendant le stimulus
-            if question == "bips":
-                prompt = ["Combien de BIPS as-tu entendus ?", "1   ou   2"]
-            else:
-                prompt = ["Combien de FLASHS as-tu vus ?", "1   ou   2"]
             iti = self.rng.uniform(C.ITI_MIN_MS, C.ITI_MAX_MS)
-            trial = StimTrial(self, t["n_flashes"], t["n_beeps"], t["beep_soa_ms"], t["flash_soa_ms"], iti, prompt)
-            diag = await trial.run()
-            gc.enable()
-            gc.collect()
-            code, ts = await self.keys.wait(list(C.RESPONSE_KEYS) + ["Escape"])
-            if code == "Escape":
+            while True:
+                gc.disable()  # évite une pause du ramasse-miettes pendant le stimulus
+                trial = StimTrial(self, t["n_flashes"], t["n_beeps"], t["beep_soa_ms"], t["flash_soa_ms"], iti, prompt)
+                diag = await trial.run()
+                gc.enable()
+                gc.collect()
+                code, ts = await self.keys.wait(list(C.RESPONSE_KEYS) + ["Escape"])
+                if code != "Escape":
+                    break
                 if await self.confirm_quit():
                     self.aborted = 1
                     return False
-                # on reprend : l'essai interrompu n'est pas enregistré, on le refait
-                self.stage.hide_html()
-                trial = StimTrial(self, t["n_flashes"], t["n_beeps"], t["beep_soa_ms"], t["flash_soa_ms"], iti, prompt)
-                diag = await trial.run()
-                code, ts = await self.keys.wait(list(C.RESPONSE_KEYS))
+                self.stage.hide_html()   # on reprend : l'essai interrompu est refait
             response = C.RESPONSE_KEYS[code]
-            rt = ts - diag["prompt_visible_ts"]
-            self.add_row(block, i, t, response, rt, diag)
+            self.add_row(block, i, t, response, ts - diag["prompt_visible_ts"], diag)
             if feedback:
                 expected = t["n_flashes"]
-                ok = response == expected
                 self.stage.clear(fixation=False)
-                msg = ("✔ Exact !" if ok else "✘ Pas tout à fait…") + f"  Il y avait {expected} flash{'s' if expected > 1 else ''}."
-                self.stage.text([msg], color="#7CFC9A" if ok else "#FF9B7C")
-                await asyncio.sleep(1.2)
+                if response == expected:
+                    self.stage.text(["Exact !"], color="#7CFC9A")
+                else:
+                    self.stage.text([f"Raté : il y avait {expected} flash{'s' if expected > 1 else ''}"], color="#FF9B7C")
+                await asyncio.sleep(1.0)
             if pause_every and i % pause_every == 0 and i < n:
-                await self.pause_screen(i, n)
+                set_phase("pause")
+                pct = int(round(100 * i / n))
+                self.stage.show_html(f"""<div class="card"><h2>Pause</h2>
+                    <div class="bar"><div style="width:{pct}%"></div></div>
+                    <p class="lead">La moitié est faite.</p>
+                    <p class="key"><span class="kbd">Espace</span> pour continuer</p></div>""")
+                await self.keys.wait(["Space"])
+                set_phase(block)
+                self.stage.hide_html()
         self.stage.progress = None
         return True
 
     async def confirm_quit(self):
         set_phase("confirm_quit")
-        self.stage.show_html("""<div class="card warn"><h2>Arrêter l'expérience ?</h2>
-            <p>Les réponses déjà données seront sauvegardées (fichier téléchargé).</p>
-            <button id="quit">Oui, arrêter</button> <button id="cont" class="primary">Non, continuer</button></div>""")
+        self.stage.show_html("""<div class="card"><h2>Arrêter ?</h2>
+            <p class="lead">Tes réponses déjà données seront gardées.</p>
+            <button id="quit">Arrêter</button> <button id="cont" class="primary">Continuer</button></div>""")
         return (await self.click(["quit", "cont"])) == "quit"
 
-    async def pause_screen(self, i, n):
-        set_phase("pause")
-        pct = int(round(100 * i / n))
-        self.stage.show_html(f"""<div class="card"><h2>Pause — {pct} % fait 🎉</h2>
-            <div class="bar"><div style="width:{pct}%"></div></div>
-            <p>Tu as fait {i} essais sur {n}. Repose tes yeux quelques secondes.</p>
-            <p>Rappel : fixe la croix, compte uniquement les <b>flashs</b> (ignore les bips).</p>
-            <p>Appuie sur <span class="kbd">Espace</span> pour continuer.</p></div>""")
-        await self.keys.wait(["Space"])
-        self.stage.hide_html()
-
-    async def instructions_audio_check(self):
-        set_phase("audiocheck_instructions")
-        self.stage.show_html("""<div class="card"><h2>Petit test d'écoute</h2>
-            <p>Tu vas entendre <b>1 ou 2 bips</b> très rapprochés (aucun flash). Après chaque essai, indique combien de
-               <b>bips</b> tu as entendus avec les touches <span class="kbd">1</span> ou <span class="kbd">2</span>
-               (rangée du haut ou pavé numérique, pas besoin de Maj).</p>
-            <p>Garde les yeux sur la croix au centre.</p>
-            <p>Appuie sur <span class="kbd">Espace</span> pour commencer (6 essais).</p></div>""")
-        await self.keys.wait(["Space"])
-
-    async def instructions_main(self):
-        set_phase("instructions")
-        self.stage.show_html("""<div class="card"><h2>La tâche</h2>
-            <div class="demo"><div class="cross">+</div><div class="dot"></div></div>
-            <ol>
-              <li>Garde les yeux fixés sur la <b>croix</b> au centre de l'écran, pendant tout l'essai.</li>
-              <li>Un disque blanc va <b>flasher</b> très brièvement en dessous, <b>1 ou 2 fois</b>.</li>
-              <li>Parfois, tu entendras aussi des bips. <b>Ignore-les</b> : seuls les flashs comptent.</li>
-              <li>Réponds ensuite avec <span class="kbd">1</span> (un flash) ou <span class="kbd">2</span> (deux flashs).
-                  Il n'y a pas de piège sur la vitesse : réponds selon ce que tu as <b>vu</b>.</li>
-            </ol>
-            <p>On commence par <b>6 essais d'entraînement</b> avec correction.</p>
-            <p>Appuie sur <span class="kbd">Espace</span> pour commencer.</p></div>""")
-        await self.keys.wait(["Space"])
-
-    # -- sauvegarde ---------------------------------------------------------------
+    # -- données : CSV, copie de secours, envoi -------------------------------------
     def csv_text(self):
-        buf = io.StringIO()
-        w = csv.DictWriter(buf, fieldnames=C.CSV_COLUMNS, extrasaction="ignore", lineterminator="\n")
-        w.writeheader()
+        lines = [",".join(C.CSV_COLUMNS)]
         for r in self.rows:
-            w.writerow({k: fmt(r.get(k, "")) if isinstance(r.get(k, ""), float) else r.get(k, "") for k in C.CSV_COLUMNS})
-        return buf.getvalue()
-
-    def filename(self):
-        pid = self.info.get("participant_id", "anonyme")
-        return f"flashson_{pid}_{self.session_id}.csv"
+            lines.append(",".join(clean_cell(r.get(k, "")) for k in C.CSV_COLUMNS))
+        return "\n".join(lines) + "\n"
 
     def backup(self):
         try:
             window.localStorage.setItem(self.storage_key, self.csv_text())
         except Exception as e:
             log("backup failed", e)
-
-    def find_leftover_sessions(self):
-        keys = []
-        try:
-            ls = window.localStorage
-            for i in range(int(ls.length)):
-                k = str(ls.key(i))
-                if k.startswith(C.EXPERIMENT_NAME + ":") and not k.endswith(":done"):
-                    if ls.getItem(k + ":done") is None:
-                        keys.append(k)
-        except Exception:
-            pass
-        return keys
-
-    def download_leftover(self, key):
-        txt = window.localStorage.getItem(key)
-        if txt:
-            self.download(str(txt), f"flashson_session_{key.split(':', 1)[1]}.csv")
-            window.localStorage.setItem(key + ":done", "1")
 
     @staticmethod
     def download(text, filename):
@@ -921,132 +784,160 @@ class Experiment:
         a.click()
         a.remove()
 
-    async def upload(self):
-        """Envoi optionnel vers un service gratuit (configuré dans config.py)."""
-        text = self.csv_text()
-        results = []
-        if C.DATAPIPE_EXPERIMENT_ID:
+    @staticmethod
+    async def _fetch(body, no_cors=False):
+        ctrl = js.AbortController.new()
+        timer = js.setTimeout(create_once_callable(lambda: ctrl.abort()), int(C.UPLOAD_TIMEOUT_S * 1000))
+        opts = {"method": "POST", "body": body, "redirect": "follow", "signal": ctrl.signal,
+                # text/plain = « requête simple » : pas de requête préalable CORS (preflight)
+                "headers": js_obj({"Content-Type": "text/plain;charset=utf-8"})}
+        if no_cors:
+            opts["mode"] = "no-cors"
+        try:
+            return await js.fetch(C.APPS_SCRIPT_URL, js_obj(opts))
+        finally:
+            js.clearTimeout(timer)
+
+    async def upload_csv(self, session_id, text):
+        """Envoie le CSV à l'application Apps Script. Retourne :
+        'confirmed' (le serveur a répondu ok), 'unconfirmed' (envoyé en mode no-cors, réponse illisible),
+        'rejected' (refusé par le serveur), 'failed' (réseau) ou 'not_configured'."""
+        if not C.APPS_SCRIPT_URL:
+            return "not_configured"
+        body = json.dumps({"v": 2, "token": C.SHARED_TOKEN, "session_id": session_id, "csv": text})
+        if len(body.encode("utf-8")) > C.UPLOAD_MAX_BYTES:
+            return "rejected"
+        network_error = False
+        for delay in C.UPLOAD_RETRY_DELAYS_S:
+            if delay:
+                await asyncio.sleep(delay)
             try:
-                resp = await js.fetch("https://pipe.jspsych.org/api/data/", js_obj({
-                    "method": "POST",
-                    "headers": js_obj({"Content-Type": "application/json", "Accept": "*/*"}),
-                    "body": json.dumps({"experimentID": C.DATAPIPE_EXPERIMENT_ID,
-                                        "filename": self.filename(), "data": text}),
-                }))
-                results.append(("DataPipe", bool(resp.ok)))  # 201 = stocké, 202 = accepté (réessai automatique)
+                resp = await self._fetch(body)
             except Exception as e:
-                log("datapipe error", e)
-                results.append(("DataPipe", False))
-        if C.APPS_SCRIPT_URL:
+                log("upload network/CORS error", e)
+                network_error = True
+                continue
+            if not resp.ok:
+                log("upload HTTP", resp.status)
+                continue
             try:
-                await js.fetch(C.APPS_SCRIPT_URL, js_obj({
-                    "method": "POST", "mode": "no-cors",
-                    "headers": js_obj({"Content-Type": "text/plain;charset=utf-8"}),
-                    "body": json.dumps({"filename": self.filename(), "data": text}),
-                }))
-                results.append(("Google Drive", None))  # réponse opaque en mode no-cors
+                answer = (await resp.json()).to_py()
+            except Exception:
+                return "unconfirmed"
+            if answer.get("ok"):
+                return "confirmed"
+            log("upload rejected", answer)
+            return "rejected"
+        if network_error:   # peut-être un blocage CORS : dernier essai « à l'aveugle »
+            try:
+                await self._fetch(body, no_cors=True)
+                return "unconfirmed"
             except Exception as e:
-                log("apps script error", e)
-                results.append(("Google Drive", False))
-        return results
+                log("upload no-cors error", e)
+        return "failed"
+
+    def mark(self, key, status):
+        try:
+            window.localStorage.setItem(key + ":status", status)
+        except Exception:
+            pass
+
+    async def retry_pending(self):
+        """Renvoie discrètement les sessions restées dans ce navigateur (ex. connexion coupée)."""
+        try:
+            await self._retry_pending()
+        except Exception as e:
+            js.console.warn("retry_pending: " + repr(e))
+
+    async def _retry_pending(self):
+        try:
+            ls = window.localStorage
+            keys = [str(ls.key(i)) for i in range(int(ls.length))]
+        except Exception:
+            return
+        for k in keys:
+            if not k.startswith(C.EXPERIMENT_NAME + ":") or k.endswith(":status") or k == self.storage_key:
+                continue
+            if not is_null(window.localStorage.getItem(k + ":status")):
+                continue
+            text = window.localStorage.getItem(k)
+            if is_null(text) or not str(text):
+                continue
+            status = await self.upload_csv(k.split(":", 1)[1], str(text))
+            log("pending", k, status)
+            if status in ("confirmed", "unconfirmed", "rejected"):
+                self.mark(k, status)
 
     # -- résultats personnels -------------------------------------------------------
-    def personal_results(self):
-        main = [r for r in self.rows if r["block"] == "main"]
+    def count(self, cond, resp):
+        sel = [r for r in self.rows if r["block"] == "main" and r["condition"] == cond]
+        return sum(r["response"] == resp for r in sel), len(sel)
 
-        def rate(cond, resp):
-            sel = [r for r in main if r["condition"] == cond]
-            return (sum(r["response"] == resp for r in sel) / len(sel)) if sel else None
-        res = dict(base=rate("1F0B", 2), fission=rate("1F2B", 2), fusion=rate("2F1B", 1),
-                   two_ok=rate("2F0B", 2), catch=rate("2F0B_catch", 2))
-        curve = [(C.CORE_BEEP_SOA_MS, res["fission"])]
-        for s in C.EXTENSION_BEEP_SOAS_MS:
-            curve.append((s, rate(f"1F2B_soa{s}", 2)))
-        res["curve"] = [(s, v) for s, v in curve if v is not None]
-        window_ms = None
-        if res["fission"] is not None and res["base"] is not None and res["fission"] - res["base"] >= 0.2:
-            half = res["base"] + 0.5 * (res["fission"] - res["base"])
-            window_ms = C.CORE_BEEP_SOA_MS
-            for s, v in res["curve"]:
-                if v >= half:
-                    window_ms = s
-        res["window_ms"] = window_ms
-        return res
+    def result_sentences(self):
+        x, y = self.count("1F2B", 2)
+        base, nb = self.count("1F0B", 2)
+        fx, fy = self.count("2F1B", 1)
+        if y == 0:
+            return ["L'expérience a été interrompue avant la fin."]
+        out = [f"Avec 1 seul flash et 2 bips, tu as vu 2 flashs {x} fois sur {y}."]
+        fission = x / y - (base / nb if nb else 0) >= 0.25
+        if fission:
+            out[0] += " Ton cerveau a laissé le son modifier ce que tu voyais."
+        else:
+            out[0] += " Chez toi, le son a peu changé ce que tu voyais."
+        if fy:
+            s = f"Avec 2 flashs et 1 seul bip, tu n'as vu qu'un flash {fx} fois sur {fy}"
+            if fx / fy >= 0.3:
+                s += " : là aussi, le son a pris le dessus." if fission else " : là, le son a pris le dessus."
+            else:
+                s += " : dans ce sens-là, tes yeux ont mieux résisté." if fission else " : là aussi, tes yeux ont résisté."
+            out.append(s)
+        return out
 
-    async def screen_end(self):
+    async def screen_end(self, error=None):
         set_phase("end")
         try:
-            if document.fullscreenElement is not None:
+            if not is_null(document.fullscreenElement):
                 document.exitFullscreen()
         except Exception:
             pass
         for r in self.rows:
-            r["aborted"] = self.aborted
+            r["aborted"] = self.aborted or (1 if error else 0)
             r["audio_check_score"] = self.info.get("audio_check_score", "")
         self.backup()
         text = self.csv_text()
-        fname = self.filename()
-        self.download(text, fname)
         js.window.flashson_csv = text  # accessible au test automatique
-        res = self.personal_results()
-
-        def pct(v):
-            return "—" if v is None else f"{round(100 * v)} %"
-        bars = ""
-        for s, v in res["curve"]:
-            h = 0 if v is None else int(round(100 * v))
-            bars += f'<div class="col"><div class="barv" style="height:{h}%"></div><span>{s} ms</span><b>{h}%</b></div>'
-        if res["fission"] is None:
-            verdict = "Expérience interrompue avant la fin : pas de résultat personnel."
-        elif res["base"] is not None and res["base"] > 0.5:
-            verdict = ("Tu as souvent répondu « 2 » même quand il n'y avait qu'un flash et aucun son : "
-                       "difficile de mesurer l'illusion chez toi (flash trop bref sur ton écran ?).")
-        elif res["window_ms"] is None:
-            verdict = ("Ton cerveau a très peu été trompé par les bips : ta vue garde le dessus. "
-                       "C'est plus rare que l'inverse !")
-        elif res["fission"] >= 0.6:
-            verdict = (f"Ton cerveau a « vu » un flash fantôme dans {pct(res['fission'])} des essais avec 1 flash + 2 bips : "
-                       f"chez toi, l'ouïe réécrit franchement ce que voient tes yeux. 🤯")
+        if error:
+            lines = ["Une erreur est survenue. Merci quand même !"]
         else:
-            verdict = (f"Un flash fantôme est apparu dans {pct(res['fission'])} des essais 1 flash + 2 bips : "
-                       f"ton cerveau mélange bien la vue et l'ouïe.")
-        win_txt = (f"<p>D'après tes réponses, l'illusion reste forte tant que les deux bips sont espacés de moins de "
-                   f"<b>≈ {res['window_ms']} ms</b> : c'est une estimation (grossière) de ta <b>fenêtre d'intégration "
-                   f"audio-visuelle</b>.</p>" if res["window_ms"] else "")
+            lines = self.result_sentences()
+        paras = "".join(f'<p class="lead">{esc(l)}</p>' for l in lines)
         self.stage.show_html(f"""
         <div class="card">
-          <h1>Merci ! 🙏</h1>
-          <p class="lead">{verdict}</p>
-          <table class="res">
-            <tr><td>1 flash, sans son → vu « 2 »</td><td>{pct(res['base'])}</td></tr>
-            <tr><td>1 flash + 2 bips → vu « 2 » (illusion de fission)</td><td><b>{pct(res['fission'])}</b></td></tr>
-            <tr><td>2 flashs + 1 bip → vu « 1 » (illusion de fusion)</td><td>{pct(res['fusion'])}</td></tr>
-          </table>
-          <h3>Illusion selon l'écart entre les 2 bips</h3>
-          <div class="chart">{bars}</div>
-          {win_txt}
-          <p class="small">Pourquoi ? Pour compter des événements rapides, le cerveau fait davantage confiance à l'oreille,
-             plus précise dans le temps que l'œil : il fusionne les deux sens (Shams et al., 2000).</p>
-          <div class="note" id="save"><b>Tes données</b> ont été téléchargées dans le fichier <code>{esc(fname)}</code>
-             (dossier Téléchargements). <span id="upl"></span><br>
-             <button id="again">Télécharger à nouveau</button></div>
-          <p class="small">Merci de ne pas dévoiler le principe de l'expérience à tes camarades avant qu'ils l'aient faite !</p>
+          <h1>Merci !</h1>
+          {paras}
+          <p class="tiny" id="upl">Envoi de tes réponses…</p>
+          <button id="dl" class="tiny-btn" style="display:none"></button>
         </div>""")
-        again = document.getElementById("again")
-        again.addEventListener("click", create_proxy(lambda ev: self.download(self.csv_text(), fname)))
-        upl = document.getElementById("upl")
-        if C.DATAPIPE_EXPERIMENT_ID or C.APPS_SCRIPT_URL:
-            upl.textContent = "Envoi automatique en cours…"
-            results = await self.upload()
-            ok = [name for name, s in results if s is not False]
-            if ok and all(s is not False for _, s in results):
-                upl.textContent = "Elles ont aussi été envoyées automatiquement. Merci !"
-                window.localStorage.setItem(self.storage_key + ":done", "1")
-            else:
-                upl.textContent = "L'envoi automatique a échoué : envoie le fichier téléchargé à l'expérimentateur."
+        if not self.rows:
+            document.getElementById("upl").textContent = ""
+            set_phase("done")
+            return
+        status = await self.upload_csv(self.session_id, text)
+        document.body.dataset.upload = status
+        upl, dl = document.getElementById("upl"), document.getElementById("dl")
+        if status in ("confirmed", "unconfirmed"):
+            upl.textContent = "Réponses envoyées. Tu peux fermer la page."
+            self.mark(self.storage_key, status)
         else:
-            upl.textContent = "Merci d'envoyer ce fichier à l'expérimentateur."
-            window.localStorage.setItem(self.storage_key + ":done", "1")
+            upl.textContent = ""
+            dl.textContent = ("Télécharger mes réponses" if status == "not_configured"
+                              else "L'envoi n'a pas marché : télécharger mes réponses")
+            dl.style.display = "inline-block"
+            fname = f"flashson_{self.session_id}.csv"
+            dl.addEventListener("click", create_proxy(lambda ev: self.download(self.csv_text(), fname)))
+            if status == "rejected":
+                self.mark(self.storage_key, status)
         set_phase("done")
 
     # -- déroulement complet --------------------------------------------------------
@@ -1074,6 +965,8 @@ class Experiment:
         return best
 
     async def run(self):
+        if C.APPS_SCRIPT_URL:   # garder une référence : asyncio ne garde les tâches que faiblement
+            self._pending_task = asyncio.ensure_future(self.retry_pending())
         await self.screen_welcome()
         await self.screen_info()
         await self.screen_setup()
@@ -1081,53 +974,52 @@ class Experiment:
         await self.estimate_refresh()
         if self.refresh_info["refresh_hz"] < 50 or self.refresh_info["frac_irregular"] > 0.2:
             set_phase("refresh_warning")
-            self.stage.show_html(f"""<div class="card warn"><h2>Affichage irrégulier</h2>
-                <p>Ton écran semble rafraîchi à {self.refresh_info['refresh_hz']:.0f} Hz avec des images irrégulières
-                ({100 * self.refresh_info['frac_irregular']:.0f} %). Ferme les autres onglets/applications, branche le
-                portable sur secteur et reste en plein écran.</p>
-                <button id="retry" class="primary">Réessayer la mesure</button> <button id="go">Continuer quand même</button></div>""")
+            self.stage.show_html("""<div class="card"><h2>Affichage saccadé</h2>
+                <p class="lead">Ferme les autres onglets et branche ton ordinateur.</p>
+                <button id="retry" class="primary">Réessayer</button> <button id="go">Continuer</button></div>""")
             if await self.click(["retry", "go"]) == "retry":
                 await self.estimate_refresh()
         # test d'écoute (1 ou 2 bips, sans flash)
-        await self.instructions_audio_check()
         ac = [t for t in self.trials if t["block"] == "audiocheck"]
-        self.rng.shuffle(ac)
-        if not await self.run_block("audiocheck", ac, question="bips"):
-            return await self.screen_end()
-        rows_ac = [r for r in self.rows if r["block"] == "audiocheck"]
-        score = sum(r["correct"] == 1 for r in rows_ac)
-        self.info["audio_check_score"] = f"{score}/{len(rows_ac)}"
-        if score < len(rows_ac) - 1:
+        await self.message("audiocheck_instructions",
+                           "<h2>Test d'écoute</h2><p class='lead'>1 ou 2 bips ?<br>Réponds avec la touche "
+                           "<span class='kbd'>1</span> ou <span class='kbd'>2</span>.</p>", "pour commencer")
+        attempt, scores = 1, []
+        while True:
+            self.rng.shuffle(ac)
+            block = "audiocheck" if attempt == 1 else "audiocheck2"
+            if not await self.run_block(block, ac, question="bips"):
+                return await self.screen_end()
+            rows_ac = [r for r in self.rows if r["block"] == block]
+            score = sum(r["correct"] == 1 for r in rows_ac)
+            scores.append(f"{score}/{len(rows_ac)}")
+            self.info["audio_check_score"] = ";".join(scores)
+            if score == len(rows_ac) or attempt == 2:
+                break
             set_phase("audiocheck_warning")
-            self.stage.show_html(f"""<div class="card warn"><h2>Test d'écoute : {score}/{len(rows_ac)}</h2>
-                <p>Tu n'as pas toujours distingué 1 bip de 2 bips. Vérifie le volume et ton casque (pas de Bluetooth).</p>
-                <button id="retry" class="primary">Refaire le test d'écoute</button> <button id="go">Continuer</button></div>""")
-            if await self.click(["retry", "go"]) == "retry":
-                self.rng.shuffle(ac)
-                if not await self.run_block("audiocheck2", ac, question="bips"):
-                    return await self.screen_end()
-                rows_ac2 = [r for r in self.rows if r["block"] == "audiocheck2"]
-                score2 = sum(r["correct"] == 1 for r in rows_ac2)
-                self.info["audio_check_score"] = f"{score}/{len(rows_ac)};{score2}/{len(rows_ac2)}"
-        # entraînement
-        await self.instructions_main()
+            self.stage.show_html(f"""<div class="card"><h2>Test d'écoute : {score}/{len(rows_ac)}</h2>
+                <p class="lead">Vérifie le volume et ton casque.</p>
+                <button id="retry" class="primary">Refaire</button> <button id="go">Continuer</button></div>""")
+            if await self.click(["retry", "go"]) == "go":
+                break
+            attempt += 1
+        # consignes + entraînement
+        await self.message("instructions", """<h2>Ta mission</h2>
+            <div class="demo"><div class="cross">+</div><div class="dot"></div></div>
+            <ul class="big"><li>Fixe la croix.</li><li>Compte les flashs du disque : <b>1 ou 2</b>.</li>
+            <li><b>Ignore les bips.</b></li></ul>""", "pour t'entraîner (3 essais)")
         practice = [t for t in self.trials if t["block"] == "practice"]
         if not await self.run_block("practice", practice, feedback=True):
             return await self.screen_end()
-        set_phase("ready")
         main = self.shuffled_main()
-        self.stage.show_html(f"""<div class="card"><h2>C'est parti !</h2>
-            <p>Maintenant, il n'y aura plus de correction. {len(main)} essais (≈ 4 min), avec une pause au milieu.</p>
-            <p>Fixe la croix, compte les <b>flashs</b>, ignore les bips. Réponds selon ce que tu as vu.</p>
-            <p>Appuie sur <span class="kbd">Espace</span> pour commencer.</p></div>""")
-        await self.keys.wait(["Space"])
+        await self.message("ready", "<h2>C'est parti !</h2><p class='lead'>Plus de correction.<br>"
+                                    "Réponds selon ce que tu as <b>vu</b>.</p>", "pour commencer")
         await self.run_block("main", main, progress=True, pause_every=(len(main) + 1) // 2)
         await self.screen_end()
 
     # -- mode vérification du timing (cf. xpy_check_audio_visual_timing.py du cours) ----
     async def run_timing_check(self):
         set_phase("timing_setup")
-        self.info = dict(participant_id="timingcheck")
         self.stage.show_html("""<div class="card"><h2>Vérification du timing audio-visuel</h2>
           <p>Ce mode affiche un carré blanc en haut à gauche pendant ~100 ms et joue un son de 440 Hz de 100 ms,
              toutes les 500 ms, en utilisant exactement le même moteur que l'expérience.
@@ -1188,6 +1080,7 @@ class Experiment:
         set_phase("done")
 
 
+
 async def main():
     trials_text = open("trials.csv", encoding="utf-8").read()
     exp = Experiment(trials_text)
@@ -1200,11 +1093,7 @@ async def main():
     except Exception as e:
         js.console.error("Erreur : " + repr(e))
         set_phase("error")
-        msg = esc(repr(e))
-        exp.stage.show_html(f"""<div class="card warn"><h2>Une erreur est survenue</h2><p><code>{msg}</code></p>
-            <p>Tes réponses déjà enregistrées vont être téléchargées. Merci d'envoyer le fichier et ce message à l'expérimentateur.</p></div>""")
-        if exp.rows:
-            for r in exp.rows:
-                r["aborted"] = 1
-            exp.download(exp.csv_text(), exp.filename())
+        if PARAMS.get("mode") != "timing":
+            await exp.screen_end(error=e)
+            set_phase("error")
         raise

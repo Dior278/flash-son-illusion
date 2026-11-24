@@ -28,7 +28,7 @@ def condition_label(nf, nb, beep_soa, catch=False):
     if catch:
         return lab + "_catch"
     if nb == 2 and nf == 1 and beep_soa != C.CORE_BEEP_SOA_MS:
-        return f"{lab}_soa{beep_soa}"
+        return f"{lab}_gap{beep_soa}"
     return lab
 
 
@@ -52,11 +52,10 @@ def make_rows():
                              n_flashes=nf, n_beeps=nb,
                              beep_soa_ms=C.CORE_BEEP_SOA_MS if nb == 2 else 0,
                              flash_soa_ms=C.FLASH_SOA_MS if nf == 2 else 0, is_catch=0))
-    # Extension : 1 flash + 2 bips à différents écarts entre les bips
-    for soa in C.EXTENSION_BEEP_SOAS_MS:
-        for _ in range(C.REPS_EXTENSION):
-            rows.append(dict(block="main", part="soa", condition=condition_label(1, 2, soa),
-                             n_flashes=1, n_beeps=2, beep_soa_ms=soa, flash_soa_ms=0, is_catch=0))
+    # Variante « écart » : 1 flash + 2 bips séparés de 200 ms
+    for _ in range(C.REPS_GAP):
+        rows.append(dict(block="main", part="gap", condition=condition_label(1, 2, C.GAP_BEEP_SOA_MS),
+                         n_flashes=1, n_beeps=2, beep_soa_ms=C.GAP_BEEP_SOA_MS, flash_soa_ms=0, is_catch=0))
     # Essais de contrôle faciles (attention) : 2 flashs séparés de 150 ms, sans son
     for _ in range(C.REPS_CATCH):
         rows.append(dict(block="main", part="catch", condition=condition_label(2, 0, 0, catch=True),

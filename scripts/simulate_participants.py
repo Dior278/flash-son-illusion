@@ -1,19 +1,21 @@
 #! /usr/bin/env python
 """Génère des données SIMULÉES (faux participants) pour tester le notebook d'analyse.
 
-⚠️  Ces données sont FAUSSES. Elles servent uniquement à vérifier que la chaîne
+ATTENTION : ces données sont FAUSSES. Elles servent uniquement à vérifier que la chaîne
 d'analyse fonctionne de bout en bout avant d'avoir de vraies données.
 Elles sont écrites dans data/simulated/ (jamais dans data/raw/), et tous les
 identifiants commencent par « SIM ».
 
-Le modèle génératif s'inspire des ordres de grandeur publiés (Shams et al., 2000 ;
-Flanagan et al., 2025) : illusion de fission forte à 57 ms qui décroît avec l'écart
-entre les bips (demi-gaussienne de largeur sigma propre à chaque participant),
-fusion plus faible, très bonne performance sans son.
-Deux participants « à problème » sont inclus pour tester les critères d'exclusion :
-SIM14 (écouteurs Bluetooth) et SIM15 (inattentif, répond au hasard).
+Modèle génératif (ordres de grandeur publiés : Shams et al., 2000 ; Andersen et al., 2004) :
+  * fission (1 flash + 2 bips) : P(« 2 ») = base + (1 - base) * amp * exp(-soa² / 2 sigma²),
+    donc forte à 57 ms et plus faible à 200 ms (fenêtre de largeur sigma propre à chacun) ;
+  * fusion (2 flashs + 1 bip) : P(« 1 ») augmente d'un indice de fusion, en moyenne plus faible
+    que la fission et légèrement corrélé à elle ;
+  * très bonne performance sans son et sur les essais de contrôle.
+Deux participants « à problème » testent les critères d'exclusion :
+l'avant-dernier (écouteurs Bluetooth) et le dernier (inattentif, répond au hasard).
 
-Usage : python scripts/simulate_participants.py [-n 15] [--seed 2026]
+Usage : python scripts/simulate_participants.py [-n 20] [--seed 2026]
 """
 import argparse
 import csv
@@ -34,16 +36,20 @@ from create_trial_list import make_rows  # noqa: E402
 def simulate_participant(k, rng, kind="normal"):
     pid = f"SIM{k:02d}"
     session = f"SIMULATED-{k:02d}"
-    base = rng.uniform(0.02, 0.10)
-    sigma = min(250, max(60, rng.gauss(130, 35)))           # largeur de la fenêtre (ms)
-    amp = min(0.9, max(0.25, rng.gauss(0.65, 0.15)))          # force de l'illusion
+    base = rng.uniform(0.02, 0.10)                              # P(« 2 ») avec 1 flash seul
+    sigma = min(260, max(80, rng.gauss(160, 40)))               # largeur de la fenêtre (ms)
+    amp = min(0.9, max(0.2, rng.gauss(0.60, 0.15)))             # force de la fission
+    p1_2f0b = rng.uniform(0.05, 0.25)                           # P(« 1 ») avec 2 flashs seuls
+    fusion = min(0.6, max(-0.05, rng.gauss(0.15, 0.10) + 0.3 * (amp - 0.6)))  # indice de fusion
     p2 = {"1F0B": base, "1F1B": min(1, base + rng.uniform(0, 0.05)),
-          "2F0B": rng.uniform(0.75, 0.95), "2F2B": rng.uniform(0.88, 0.99), "2F0B_catch": 0.97}
-    p2["2F1B"] = max(0.05, p2["2F0B"] - rng.uniform(0.05, 0.35))
-    audio_device = rng.choice(["wired_headphones", "laptop_speakers", "laptop_speakers", "external_speakers"])
+          "2F0B": 1 - p1_2f0b, "2F1B": max(0.02, 1 - p1_2f0b - fusion),
+          "2F2B": min(0.99, 1 - p1_2f0b + rng.uniform(0, 0.08)), "2F0B_catch": 0.97}
+    audio_device = rng.choice(["wired", "wired", "speakers"])
     if kind == "bluetooth":
         audio_device = "bluetooth"
-        amp *= 0.3                                            # son retardé : l'illusion s'effondre
+        amp *= 0.3                                              # son retardé : l'illusion s'effondre
+        p2["2F1B"] = p2["2F0B"]
+
     def prob_two(t):
         if kind == "inattentive":
             return 0.5
@@ -59,9 +65,7 @@ def simulate_participant(k, rng, kind="normal"):
     main = [t for t in trials if t["block"] == "main"]
     rng.shuffle(main)
     seq = [t for t in trials if t["block"] == "audiocheck"] + [t for t in trials if t["block"] == "practice"] + main
-    info = dict(age=rng.randint(19, 26), gender=rng.choice(["F", "M", "M", "F", "undisclosed"]),
-                handedness=rng.choice(["right"] * 8 + ["left"]), audio_device=audio_device,
-                vision=rng.choice(["normal", "corrected"]), hearing="normal")
+    info = dict(age_bracket=rng.choice(["18-21"] * 5 + ["22-25"] * 4 + ["26-35"]), audio_device=audio_device)
     rows, counters, tg, ac_correct = [], {}, 0, 0
     for t in seq:
         block = t["block"]
@@ -78,7 +82,7 @@ def simulate_participant(k, rng, kind="normal"):
         nf = t["n_flashes"]
         rows.append(dict(
             participant_id=pid, session_id=session, experiment_version=C.EXPERIMENT_VERSION + "-SIMULATED",
-            timestamp_iso=(t0 + timedelta(seconds=2.4 * tg)).isoformat() + "Z",
+            timestamp_iso=(t0 + timedelta(seconds=2.2 * tg)).isoformat() + "Z",
             block=block, trial_in_block=counters[block], trial_global=tg, condition=t["condition"],
             n_flashes=nf, n_beeps=t["n_beeps"], beep_soa_ms=t["beep_soa_ms"], flash_soa_ms_target=t["flash_soa_ms"],
             is_catch=t["is_catch"], part=t["part"], response=response, correct=int(response == expected),
@@ -100,17 +104,20 @@ def simulate_participant(k, rng, kind="normal"):
     score = f"{ac_correct}/{len(C.AUDIO_CHECK_TRIALS)}"
     for r in rows:
         r["audio_check_score"] = score
-    return pid, rows, dict(base=base, amp=amp, sigma=sigma, kind=kind)
+    return pid, rows, dict(base=base, amp=amp, sigma=sigma, fusion=fusion, kind=kind)
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("-n", type=int, default=15)
+    ap.add_argument("-n", type=int, default=20)
     ap.add_argument("--seed", type=int, default=2026)
     ap.add_argument("--out", default=os.path.join(ROOT, "data", "simulated"))
     args = ap.parse_args()
     rng = random.Random(args.seed)
     os.makedirs(args.out, exist_ok=True)
+    for old in os.listdir(args.out):                      # efface les anciennes simulations
+        if old.endswith("_SIMULATED.csv") or old == "ground_truth_SIMULATED.txt":
+            os.remove(os.path.join(args.out, old))
     truth = []
     for k in range(1, args.n + 1):
         kind = "bluetooth" if k == args.n - 1 else "inattentive" if k == args.n else "normal"
@@ -123,9 +130,10 @@ def main():
         truth.append(dict(participant_id=pid, **params))
     with open(os.path.join(args.out, "ground_truth_SIMULATED.txt"), "w", encoding="utf-8") as f:
         f.write("# Paramètres VRAIS utilisés pour simuler chaque faux participant (pour vérifier l'analyse)\n")
-        f.write("participant_id\tkind\tbase\tamp\tsigma_ms\n")
+        f.write("participant_id\tkind\tbase\tamp\tsigma_ms\tfusion\n")
         for t in truth:
-            f.write(f"{t['participant_id']}\t{t['kind']}\t{t['base']:.3f}\t{t['amp']:.3f}\t{t['sigma']:.1f}\n")
+            f.write(f"{t['participant_id']}\t{t['kind']}\t{t['base']:.3f}\t{t['amp']:.3f}\t{t['sigma']:.1f}"
+                    f"\t{t['fusion']:.3f}\n")
     print(f"{args.n} participants simulés écrits dans {os.path.normpath(args.out)}")
 
 

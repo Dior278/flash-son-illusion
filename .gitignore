@@ -5,13 +5,20 @@ __pycache__/
 venv/
 .ipynb_checkpoints/
 
-# sorties du test automatique
+# sorties des tests automatiques
 tests/output/
+tests/output_upload/
 
 # systèmes
 .DS_Store
 Thumbs.db
 desktop.ini
 
-# Décommenter pour NE PAS publier les données réelles sur GitHub :
-# data/raw/*.csv
+# Données RÉELLES des participants : jamais publiées sur GitHub (dépôt public)
+data/raw/*
+!data/raw/.gitkeep
+!data/raw/README.md
+
+# fichiers locaux éventuels
+*.env
+.env*
