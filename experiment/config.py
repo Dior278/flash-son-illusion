@@ -99,7 +99,7 @@ REFRESH_ESTIMATE_FRAMES = 120
 # Google Drive dédié ; elle ne permet pas de lire ou lister les données.
 # Tant que l'URL n'est pas renseignée, rien n'est envoyé et un petit bouton
 # de téléchargement apparaît à la fin (pratique pour tester en local).
-APPS_SCRIPT_URL = ""   # ex. "https://script.google.com/macros/s/XXXXXXXX/exec"
+APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzIqniiY6nsk2GHrFk-aI83w0wplFrhWN3yvnbYtzoD-RtkIEaXiRtWzkjFdalZHL2auw/exec"
 
 # Jeton partagé optionnel (doit être identique dans le script Apps Script).
 # ATTENTION : le dépôt est public, donc ce jeton est lisible par tous. Ce n'est
