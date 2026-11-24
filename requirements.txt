@@ -1,0 +1,11 @@
+# Dépendances pour l'ANALYSE (l'expérience elle-même tourne dans le navigateur : rien à installer)
+numpy
+pandas
+scipy
+matplotlib
+seaborn
+statsmodels
+pingouin
+jupyter
+# optionnel : test automatique de l'expérience dans Chrome sans fenêtre
+# playwright

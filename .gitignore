@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.ipynb_checkpoints/
+
+# sorties du test automatique
+tests/output/
+
+# systèmes
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Décommenter pour NE PAS publier les données réelles sur GitHub :
+# data/raw/*.csv

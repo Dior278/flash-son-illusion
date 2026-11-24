@@ -1,0 +1,17 @@
+# Paramètres VRAIS utilisés pour simuler chaque faux participant (pour vérifier l'analyse)
+participant_id	kind	base	amp	sigma_ms
+SIM01	normal	0.030	0.647	88.1
+SIM02	normal	0.076	0.572	168.0
+SIM03	normal	0.094	0.797	152.0
+SIM04	normal	0.037	0.602	177.3
+SIM05	normal	0.081	0.615	180.7
+SIM06	normal	0.068	0.381	147.7
+SIM07	normal	0.059	0.565	92.7
+SIM08	normal	0.029	0.457	126.6
+SIM09	normal	0.029	0.605	90.5
+SIM10	normal	0.038	0.785	74.9
+SIM11	normal	0.088	0.900	86.7
+SIM12	normal	0.066	0.771	150.4
+SIM13	normal	0.032	0.653	110.2
+SIM14	bluetooth	0.066	0.199	115.9
+SIM15	inattentive	0.061	0.595	116.7
