@@ -35,17 +35,15 @@ jupyter notebook analysis/analysis.ipynb
 
 Puis *Kernel → Restart & Run All*. Les figures sont enregistrées dans `analysis/figures/`.
 
-Contenu du notebook :
-1. chargement de `data/processed/trials_anon.csv` et description des sessions ;
-2. **critères d'exclusion**, fixés à l'avance :
+Contenu du notebook (9 figures, chacune suivie d'une phrase « À retenir ») :
+1. données, **critères d'exclusion** fixés à l'avance et participants (figure 1) :
    - essais : images perdues, flash en retard de plus d'une demi-image, son programmé trop tard, onglet masqué, temps de réponse < 100 ms ou > 10 s ;
    - sessions : Bluetooth, test d'écoute < 2/3 à la dernière tentative, contrôles ratés (< 75 % de « 2 » sur les 2 flashs bien séparés, ou < 70 % de « 1 » pour 1 flash sans son), écran < 50 Hz, > 20 % d'essais exclus pour le timing, < 80 % des essais faits ;
-3. nombre moyen de flashs perçus **par participant et par condition** (figure 1, façon Shams et al.) ;
-4. **H1, H2, H3, H5** : t appariés (unilatéraux, direction prédite), Wilcoxon en contrôle, d de Cohen, IC 95 % par bootstrap (figure 2) ;
-5. **H4** : ANOVA à mesures répétées 2 × 3 (pingouin, correction de Greenhouse-Geisser) ;
-6. détection du signal (d′, critère c) ;
-7. analyses exploratoires : double flash réel aidé par le son, qui « gagne » en cas de conflit, différences individuelles (figure 3), effet d'ordre, temps de réponse, type de son et âge ;
-8. robustesse sans exclusion de session, diagnostics de timing, conclusion.
+2. nombre moyen de flashs perçus par condition, façon Shams et al. (figure 2) ;
+3. **H1, H2, H3, H5** : t appariés (unilatéraux), Wilcoxon, d de Cohen, IC 95 % bootstrap (figure 3) ; **H4** : ANOVA à mesures répétées 2 × 3 (Greenhouse-Geisser) ;
+4. détection du signal, d′ et critère c (figure 4) ;
+5. analyses exploratoires : le son aide à voir 2 vrais flashs et gagne les conflits (figure 5), différences individuelles (figure 6), temps de réponse (figure 7), évolution au cours de la session (figure 8), type de son et âge (figure 9) ;
+6. robustesse sans exclusion de session ; 7. timing ; 8. conclusion ; 9. limites.
 
 > **Données publiées.** Les CSV bruts (`data/raw/`) restent privés. `python scripts/anonymize_data.py` en tire `data/processed/trials_anon.csv` (sans code de session, date, heure, navigateur détaillé ni taille d'écran ; participants renommés `P01`…), publié dans le dépôt et lu par le notebook. Le script `scripts/simulate_participants.py` peut encore générer de faux participants dans `data/simulated/` pour tester le code, mais le rapport utilise uniquement les vraies données.
 

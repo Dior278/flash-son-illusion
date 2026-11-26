@@ -41,7 +41,7 @@ jupyter notebook analysis/analysis.ipynb
 - **Fission :** 1 flash + 2 bips est vu comme 2 flashs dans **54 %** des essais, contre 3 % sans son (p < 0,001).
 - **Fusion :** 2 flashs + 1 bip sont vus comme 1 seul dans 89 % des essais, contre 72 % sans son (p = 0,002). Elle est plus faible que la fission.
 - **Fenêtre temporelle :** avec 200 ms entre les bips au lieu de 57 ms, l'illusion tombe à 12 %.
-- **En plus des articles :** les 2 bips aident aussi à voir 2 vrais flashs (78 % contre 28 % sans son), et en cas de conflit la réponse suit le son 71 % du temps.
+- **En plus des articles :** les 2 bips aident aussi à voir 2 vrais flashs (78 % contre 28 % sans son), en cas de conflit la réponse suit le son 71 % du temps, les réponses trompées sont plus lentes (≈ +270 ms), et l'aide du son pour voir 2 vrais flashs diminue au fil de la session (≈ 90 % → 63 %).
 
 Conclusion : pour compter des événements rapides, le cerveau fait surtout confiance à l'oreille, à condition que le son tombe au bon moment.
 
