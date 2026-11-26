@@ -3,9 +3,9 @@
 | Dossier | Contenu |
 |---|---|
 | `raw/` | **Données réelles**, un CSV par session (`flashson_<session>.csv`), téléchargé depuis le dossier Google Drive de collecte. Copier les fichiers **sans les modifier**. **Ignoré par git** : jamais publié sur GitHub. |
-| `simulated/` | **Données SIMULÉES** (faux participants `SIM01`…`SIM20`) générées par `scripts/simulate_participants.py`, uniquement pour tester le notebook. **Ne jamais les mélanger avec les vraies données ni les présenter comme des résultats.** |
+| `processed/trials_anon.csv` | **Données anonymisées publiées** (24 sessions, participants `P01`…`P24`), produites par `python scripts/anonymize_data.py` à partir de `raw/`. Sans code de session, date, heure, navigateur détaillé ni taille d'écran. Le fichier de test du développeur n'y figure pas. **C'est ce fichier que lit le notebook.** |
 
-Le notebook `analysis/analysis.ipynb` lit tous les fichiers `raw/*.csv`. Si ce dossier est vide, il passe automatiquement aux données simulées et l'indique en gros.
+Le notebook `analysis/analysis.ipynb` lit `processed/trials_anon.csv` : il tourne donc juste après un `git clone`, sans les fichiers bruts. Après de nouvelles sessions, copier les CSV dans `raw/` puis relancer `python scripts/anonymize_data.py`.
 
 Format : une ligne par essai (test d'écoute, entraînement et essais principaux, colonne `block`) ; colonnes listées dans `experiment/config.py` (`CSV_COLUMNS`).
 

@@ -85,7 +85,8 @@ flash-son-illusion/
 │   └── style.css
 ├── scripts/
 │   ├── create_trial_list.py    # écrit experiment/trials.csv à partir de config.py
-│   └── simulate_participants.py# génère des données SIMULÉES dans data/simulated/
+│   ├── anonymize_data.py       # data/raw/ (privé) -> data/processed/trials_anon.csv (publié)
+│   └── simulate_participants.py# génère des données SIMULÉES (test du code uniquement)
 ├── tools/
 │   ├── google_apps_script.gs   # récepteur des données (Google Apps Script, écriture seule)
 │   └── appsscript.json         # son manifeste (droits minimaux)
@@ -96,7 +97,7 @@ flash-son-illusion/
 │   └── DEPLOIEMENT.md          # mise en ligne pas à pas (Apps Script + GitHub Pages)
 ├── data/
 │   ├── raw/                    # ← CSV des vrais participants (ignoré par git)
-│   └── simulated/              # faux participants (test du notebook uniquement)
+│   └── processed/              # données anonymisées lues par le notebook
 ├── analysis/
 │   ├── analysis.ipynb          # ★ analyse (notebook Jupyter, en français)
 │   ├── analysis.html           # le même notebook exporté en HTML (rapport)

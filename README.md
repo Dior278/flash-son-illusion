@@ -25,11 +25,25 @@ cd flash-son-illusion
 python -m http.server 8000
 ```
 
-Puis ouvrir <http://localhost:8000>. Options : `?short=1` (version courte, 8 essais), `?debug=1` (mesures de timing). L'analyse : `pip install -r requirements.txt` puis `jupyter notebook analysis/analysis.ipynb`.
+Puis ouvrir <http://localhost:8000>. Options : `?short=1` (version courte, 8 essais), `?debug=1` (mesures de timing).
 
-## Analyses
+Pour refaire l'analyse (les données anonymisées sont dans le dépôt, [`data/processed/trials_anon.csv`](data/processed/trials_anon.csv)) :
 
-Statistiques descriptives par participant, t de Student appariés, ANOVA à mesures répétées 2 × 3 et modèle mixte : voir le [rapport](https://dior278.github.io/flash-son-illusion/analysis/analysis.html). Tant qu'il n'y a pas de vraies données, il tourne sur des données **simulées** (figures marquées [SIMULÉ]).
+```
+pip install -r requirements.txt
+jupyter notebook analysis/analysis.ipynb
+```
+
+## Résultats
+
+**24 sessions reçues, 6 exclues** (écran trop lent, timing raté, Bluetooth, contrôle d'attention raté ; critères fixés à l'avance), **18 participants analysés**. Détails : [rapport d'analyse](https://dior278.github.io/flash-son-illusion/analysis/analysis.html).
+
+- **Fission :** 1 flash + 2 bips est vu comme 2 flashs dans **54 %** des essais, contre 3 % sans son (p < 0,001).
+- **Fusion :** 2 flashs + 1 bip sont vus comme 1 seul dans 89 % des essais, contre 72 % sans son (p = 0,002). Elle est plus faible que la fission.
+- **Fenêtre temporelle :** avec 200 ms entre les bips au lieu de 57 ms, l'illusion tombe à 12 %.
+- **En plus des articles :** les 2 bips aident aussi à voir 2 vrais flashs (78 % contre 28 % sans son), et en cas de conflit la réponse suit le son 71 % du temps.
+
+Conclusion : pour compter des événements rapides, le cerveau fait surtout confiance à l'oreille, à condition que le son tombe au bon moment.
 
 ## Documentation détaillée
 
@@ -37,9 +51,9 @@ Statistiques descriptives par participant, t de Student appariés, ANOVA à mesu
 
 ## Mon expérience de programmation
 
-*(À compléter par l'auteur.)*
-- **Avant le cours :** …
-- **Ce que j'ai appris** (cours, projet, travail personnel) : …
+*(À compléter par l'auteur, quelques lignes suffisent.)*
+- **Avant le cours :** *(langages déjà utilisés, niveau, projets éventuels)* …
+- **Ce que j'ai appris** *(pendant le cours, en codant ce projet ou seul : Python, expérience en ligne, git/GitHub, statistiques…)* : …
 - **Ce qui m'a manqué dans le cours :** …
 
 ---
